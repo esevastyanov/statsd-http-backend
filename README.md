@@ -15,15 +15,8 @@ In config.js:
 
 ```
 {
-backends: [ "statsd-graphite-http-backend" ],
-api_key: 'YOUR CONFIGURED API KEY',
-bridgeURL: 'http://GRAPHITE_SERVER:HTTP_PORT/publish/'
+  backends: [ "./backends/statsd-http-backend" ],
+  api_key: 'user:password',
+  bridgeURL: 'http://host:port/publish'
 }
 ```
-
-notes
-=====
-
-Should work with both [Backstop](https://github.com/obfuscurity/backstop) and [Graphite HTTP Bridge](https://github.com/bmhatfield/graphite-http-bridge)
-
-Now with HTTPS support, thanks Colin Jones (colinjonesx)

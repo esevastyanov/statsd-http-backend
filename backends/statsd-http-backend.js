@@ -1,15 +1,13 @@
 /*
- * Flush stats to graphite (http://graphite.wikidot.com/).
- *
- * To enable this backend, include 'graphite-http' in the backends
+ * To enable this backend, include 'statsd-http-backend' in the backends
  * configuration array:
  *
- *   backends: ['graphite-http']
+ *   backends: ['statsd-http-backend']
  *
  * This backend supports the following config options:
  *
- *   bridgeURL: URL of the HTTP bridge, with trailing slash.
- *   api_key: API key, appended to URL.
+ *   bridgeURL: URL of the HTTP bridge.
+ *   api_key: API key for Basic authentication, passed in "Authorization" header.
  */
 
 var net = require('net'),
@@ -40,19 +38,30 @@ var timerNamespace   = [];
 var gaugesNamespace  = [];
 var setsNamespace    = [];
 
-var graphiteStats = {};
+var httpStats = {};
 
-function metric(path, val, timestamp){
-    this.metric = path;
+function metric(path, val, timestamp, type) {
+    var pathParts = path.split(";")
+    // Metric name
+    var metric = pathParts.find(p => p.indexOf("=") === -1);
+    var thisMetric = this;
+    // Tags
+    pathParts
+      .filter(p => p.indexOf('=') !== -1)
+      .map(p => p.split("=", 2))
+      .filter(ts => ts.length == 2)
+      .forEach(ts => thisMetric[ts[0]] = ts[1]);
+    this.metric = metric != null ? metric : "undefined";
     this.value = val;
     this.timestamp = timestamp;
+    this.type = type;
 }
 
-var post_stats = function graphite_post_stats(metricsArray) {
-  var last_flush = graphiteStats.last_flush || 0;
-  var last_exception = graphiteStats.last_exception || 0;
-  var flush_time = graphiteStats.flush_time || 0;
-  var flush_length = graphiteStats.flush_length || 0;
+var post_stats = function http_post_stats(metricsArray) {
+  var last_flush = httpStats.last_flush || 0;
+  var last_exception = httpStats.last_exception || 0;
+  var flush_time = httpStats.flush_time || 0;
+  var flush_length = httpStats.flush_length || 0;
 
   if (bridgeURL) {
     try {
@@ -60,16 +69,19 @@ var post_stats = function graphite_post_stats(metricsArray) {
       var ts = Math.round(new Date().getTime() / 1000);
       var namespace = globalNamespace.concat(prefixStats).join(".");
 
-      metricsArray.push(new metric(namespace + '.graphiteStats.last_exception', last_exception, ts));
-      metricsArray.push(new metric(namespace + '.graphiteStats.last_flush', last_flush, ts));
-      metricsArray.push(new metric(namespace + '.graphiteStats.flush_time', flush_time, ts));
-      metricsArray.push(new metric(namespace + '.graphiteStats.flush_length', flush_length, ts));
+      metricsArray.push(new metric(namespace + '.httpStats.last_exception', last_exception, ts, "gauge"));
+      metricsArray.push(new metric(namespace + '.httpStats.last_flush', last_flush, ts, "gauge"));
+      metricsArray.push(new metric(namespace + '.httpStats.flush_time', flush_time, ts, "timer"));
+      metricsArray.push(new metric(namespace + '.httpStats.flush_length', flush_length, ts, "timer"));
 
       var data = JSON.stringify(metricsArray);
 
-      var options = url.parse(bridgeURL + api_key);
+      var options = url.parse(bridgeURL);
       options.method = 'POST';
-      options.headers = {'Content-Length': data.length};
+      options.headers = {
+        'Authorization': 'Basic ' + Buffer.from(api_key).toString('base64'),
+        'Content-Length': data.length
+      };
 
       var req;
 
@@ -85,13 +97,13 @@ var post_stats = function graphite_post_stats(metricsArray) {
 
       req.on('error', function(e) {
         console.log('problem with request: ' + e.message);
-        graphiteStats.last_exception = Math.round(new Date().getTime() / 1000);
+        httpStats.last_exception = Math.round(new Date().getTime() / 1000);
       });
 
       req.on('close', function(e){
-        graphiteStats.flush_time = (Date.now() - starttime);
-        graphiteStats.flush_length = data.length;
-        graphiteStats.last_flush = Math.round(new Date().getTime() / 1000);
+        httpStats.flush_time = (Date.now() - starttime);
+        httpStats.flush_length = data.length;
+        httpStats.last_flush = Math.round(new Date().getTime() / 1000);
       });
 
       req.write(data);
@@ -100,12 +112,12 @@ var post_stats = function graphite_post_stats(metricsArray) {
       if (debug) {
         util.log(e);
       }
-      graphiteStats.last_exception = Math.round(new Date().getTime() / 1000);
+      httpStats.last_exception = Math.round(new Date().getTime() / 1000);
     }
   }
 };
 
-var flush_stats = function graphite_flush(ts, metrics) {
+var flush_stats = function http_flush(ts, metrics) {
   var starttime = Date.now();
   var metricsArray = [];
   var numStats = 0;
@@ -125,11 +137,11 @@ var flush_stats = function graphite_flush(ts, metrics) {
     var valuePerSecond = counter_rates[key]; // pre-calculated "per second" rate
 
     if (legacyNamespace === true) {
-      metricsArray.push(new metric(namespace.join("."), valuePerSecond, ts));
-      metricsArray.push(new metric('stats_counts.' + key, value, ts));
+      metricsArray.push(new metric(namespace.join("."), valuePerSecond, ts, "gauge"));
+      metricsArray.push(new metric('stats_counts.' + key, value, ts, "count"));
     } else {
-      metricsArray.push(new metric(namespace.concat('rate').join("."), valuePerSecond, ts));
-      metricsArray.push(new metric(namespace.concat('count').join("."), value, ts));
+      metricsArray.push(new metric(namespace.concat('rate').join("."), valuePerSecond, ts, "gauge"));
+      metricsArray.push(new metric(namespace.concat('count').join("."), value, ts, "count"));
     }
   }
 
@@ -138,7 +150,7 @@ var flush_stats = function graphite_flush(ts, metrics) {
     var the_key = namespace.join(".");
     for (timer_data_key in timer_data[key]) {
       if (typeof(timer_data[key][timer_data_key]) === 'number') {
-        metricsArray.push(new metric(the_key + '.' + timer_data_key, timer_data[key][timer_data_key], ts));
+        metricsArray.push(new metric(the_key + '.' + timer_data_key, timer_data[key][timer_data_key], ts, "timer"));
       } else {
         for (var timer_data_sub_key in timer_data[key][timer_data_key]) {
           var mpath = the_key + '.' + timer_data_key + '.' + timer_data_sub_key;
@@ -146,7 +158,7 @@ var flush_stats = function graphite_flush(ts, metrics) {
           if (debug) {
             util.log(mval.toString());
           }
-          metricsArray.push(new metric(mpath, mval, ts));
+          metricsArray.push(new metric(mpath, mval, ts, "timer"));
         }
       }
     }
@@ -154,50 +166,50 @@ var flush_stats = function graphite_flush(ts, metrics) {
 
   for (key in gauges) {
     var namespace = gaugesNamespace.concat(key);
-    metricsArray.push(new metric(namespace.join("."), gauges[key], ts));
+    metricsArray.push(new metric(namespace.join("."), gauges[key], ts, "gauge"));
   }
 
   for (key in sets) {
     var namespace = setsNamespace.concat(key);
-    metricsArray.push(new metric(namespace.join(".") + '.count', sets[key].values().length, ts));
+    metricsArray.push(new metric(namespace.join(".") + '.count', sets[key].values().length, ts, "set"));
   }
 
   var namespace = globalNamespace.concat(prefixStats);
   if (legacyNamespace === true) {
-    metricsArray.push(new metric(prefixStats + '.numStats', numStats, ts));
-    metricsArray.push(new metric('stats.' + prefixStats + '.graphiteStats.calculationtime', (Date.now() - starttime), ts));
+    metricsArray.push(new metric(prefixStats + '.numStats', numStats, ts, "count"));
+    metricsArray.push(new metric('stats.' + prefixStats + '.httpStats.calculationtime', (Date.now() - starttime), ts, "timer"));
     for (key in statsd_metrics) {
-      metricsArray.push(new metric('stats.' + prefixStats + '.' + key, statsd_metrics[key], ts));
+      metricsArray.push(new metric('stats.' + prefixStats + '.' + key, statsd_metrics[key], ts, "statsd"));
     }
   } else {
-    metricsArray.push(new metric(namespace.join(".") + '.numStats', numStats, ts));
-    metricsArray.push(new metric(namespace.join(".") + '.graphiteStats.calculationtime', (Date.now() - starttime), ts));
+    metricsArray.push(new metric(namespace.join(".") + '.numStats', numStats, ts, "count"));
+    metricsArray.push(new metric(namespace.join(".") + '.httpStats.calculationtime', (Date.now() - starttime), ts, "timer"));
     for (key in statsd_metrics) {
       var the_key = namespace.concat(key);
-      metricsArray.push(new metric(the_key.join("."), statsd_metrics[key], ts));
+      metricsArray.push(new metric(the_key.join("."), statsd_metrics[key], ts, "statsd"));
     }
   }
 
   post_stats(metricsArray);
 };
 
-var backend_status = function graphite_status(writeCb) {
-  for (var stat in graphiteStats) {
-    writeCb(null, 'graphite', stat, graphiteStats[stat]);
+var backend_status = function http_status(writeCb) {
+  for (var stat in httpStats) {
+    writeCb(null, 'http', stat, httpStats[stat]);
   }
 };
 
-exports.init = function graphite_init(startup_time, config, events) {
+exports.init = function http_init(startup_time, config, events) {
   debug = config.debug;
   bridgeURL = config.bridgeURL;
   api_key = config.api_key;
-  config.graphite = config.graphite || {};
-  globalPrefix    = config.graphite.globalPrefix;
-  prefixCounter   = config.graphite.prefixCounter;
-  prefixTimer     = config.graphite.prefixTimer;
-  prefixGauge     = config.graphite.prefixGauge;
-  prefixSet       = config.graphite.prefixSet;
-  legacyNamespace = config.graphite.legacyNamespace;
+  config.http = config.http || {};
+  globalPrefix    = config.http.globalPrefix;
+  prefixCounter   = config.http.prefixCounter;
+  prefixTimer     = config.http.prefixTimer;
+  prefixGauge     = config.http.prefixGauge;
+  prefixSet       = config.http.prefixSet;
+  legacyNamespace = config.http.legacyNamespace;
   prefixStats     = config.prefixStats;
 
   // set defaults for prefixes
@@ -239,10 +251,10 @@ exports.init = function graphite_init(startup_time, config, events) {
       setsNamespace = ['stats', 'sets'];
   }
 
-  graphiteStats.last_flush = startup_time;
-  graphiteStats.last_exception = startup_time;
-  graphiteStats.flush_time = 0;
-  graphiteStats.flush_length = 0;
+  httpStats.last_flush = startup_time;
+  httpStats.last_exception = startup_time;
+  httpStats.flush_time = 0;
+  httpStats.flush_length = 0;
 
   flushInterval = config.flushInterval;
 

@@ -1,12 +1,12 @@
 {
-  "name": "statsd-graphite-http-backend",
-  "description": "A backend for StatsD to emit stats graphite via an HTTP Bridge",
-  "author": "Brian Hatfield",
+  "name": "statsd-http-backend",
+  "description": "A backend for StatsD to emit stats via an HTTP Bridge",
+  "author": "Eugene Sevastianov",
   "repository": {
     "type": "git",
-    "url": "https://github.com/bmhatfield/statsd-http-backend.git"
+    "url": "https://github.com/esevastyanov/statsd-http-backend.git"
   },
-  "version": "0.1.5",
+  "version": "0.1.0",
   "dependencies": {
   },
   "devDependencies": {
@@ -14,5 +14,5 @@
   "engine": {
     "node": ">=0.4"
   },
-  "main": "graphite-http-backend/graphite-http.js"
+  "main": "backends/statsd-http-backend.js"
 }
